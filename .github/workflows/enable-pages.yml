@@ -5,11 +5,52 @@ on:
   workflow_dispatch:
 permissions:
   pages: write
-  contents: read
+  contents: write
 jobs:
-  enable:
+  unpack-and-enable:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Unpack base64 image archive if present
+        run: |
+          set -euo pipefail
+          if [ ! -d assets-b64 ]; then
+            echo "No assets-b64 directory; skip unpack"
+            exit 0
+          fi
+          python3 <<'PY'
+          import base64, hashlib, pathlib, tarfile, io
+          root = pathlib.Path('assets-b64')
+          parts = sorted(root.glob('images.tar.b64.*'))
+          if not parts:
+              print('no parts')
+              raise SystemExit(0)
+          b64 = ''.join(p.read_text(encoding='ascii') for p in parts)
+          data = base64.b64decode(b64)
+          manifest = (root/'MANIFEST.txt').read_text(encoding='utf-8')
+          print(manifest)
+          expected = [line.split('=',1)[1].strip() for line in manifest.splitlines() if line.startswith('sha256=')][0]
+          got = hashlib.sha256(data).hexdigest()
+          if got != expected:
+              raise SystemExit(f'sha256 mismatch {got} != {expected}')
+          with tarfile.open(fileobj=io.BytesIO(data), mode='r:') as tf:
+              tf.extractall(path='.')
+          print('extracted ok')
+          PY
+          rm -rf assets-b64
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No file changes after unpack"
+          else
+            git commit -m "Unpack image assets for GitHub Pages"
+            git push
+          fi
+
       - name: Enable GitHub Pages from main branch, root folder
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
